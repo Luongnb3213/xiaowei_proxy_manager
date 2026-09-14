@@ -4,7 +4,11 @@ Nguồn chính: https://www.xiaowei.xin/help/70/234
 Manual: `70` - 效卫安卓投屏, nhóm `8. API文档`.
 
 Tài liệu này được dịch và rút gọn để agent khác có thể implement adapter
-Xiaowei cho `xiaowei_proxy_manager`. Các article liên quan:
+Xiaowei cho `xiaowei_proxy_manager`. Bản rà soát này bao phủ đủ **31 action**
+đang được liệt kê trong article `351`; ngày đối chiếu: `2026-09-14`.
+
+URL một article có dạng `https://www.xiaowei.xin/help/70/<article_id>`.
+Các article liên quan:
 
 - `234`: 8.1.1. 接口文档说明 - mô tả protocol chung.
 - `349`: 8.1.3. API接口功能如何使用？ - cách test API.
@@ -109,15 +113,69 @@ Nguồn: article `351` - `4.2 接口文档`.
 | 20 | Tạo tag | `addTag` | Tạo nhãn/nhóm. |
 | 21 | Sửa tag | `updateTag` | Đổi tên nhãn/nhóm. |
 | 22 | Xóa tag | `removeTag` | Xóa nhãn/nhóm. |
-| 23 | Thêm thiết bị vào tag | `addtagdevice` | Gán device vào nhóm tag. |
+| 23 | Thêm thiết bị vào tag | `addTagDevice` | Gán device vào nhóm tag. |
 | 24 | Xóa thiết bị khỏi tag | `removeTagDevice` | Bỏ device khỏi nhóm tag. |
 | 25 | Chạy lệnh ADB shell | `adb_shell` | Chạy command sau `adb shell`, không cần ghi `adb shell`. |
-| 26 | Lấy danh sách action | chưa đọc chi tiết | Article `380`. |
-| 27 | Chạy action | chưa đọc chi tiết | Article `382`. |
-| 28 | Dừng action | chưa đọc chi tiết | Article `381`. |
-| 29 | Lấy danh sách task | chưa đọc chi tiết | Article `379`. |
-| 30 | Chạy task | chưa đọc chi tiết | Article `378`. |
-| 31 | Dừng task | chưa đọc chi tiết | Article `377`. |
+| 26 | Lấy danh sách action | `actionTasks` | Lấy các action đã tạo; yêu cầu Xiaowei client từ `8.288`. |
+| 27 | Chạy action | `actionCreate` | Tạo job chạy một action; yêu cầu client từ `8.288`. |
+| 28 | Dừng action | `actionRemove` | Dừng action đang chạy; yêu cầu client từ `8.288`. |
+| 29 | Lấy danh sách task | `autojsTasks` | Lấy danh sách task JS/BAT; yêu cầu client từ `8.288`. |
+| 30 | Chạy task | `autojsCreate` | Tạo job chạy task; yêu cầu client từ `8.288`. |
+| 31 | Dừng task | `autojsRemove` | Dừng task đang chạy; yêu cầu client từ `8.288`. |
+
+## Ma Trận Tham Số Đầy Đủ
+
+Đã đối chiếu từng article thuộc nhóm API chính thức. Ký hiệu `!` là bắt buộc,
+`?` là không bắt buộc. Trừ `list`, `actionTasks` và `autojsTasks`, request thường
+có `devices`; giá trị là `all`, danh sách serial phân cách bằng dấu phẩy, hoặc
+`IP:port` khi không có serial.
+
+| Article | `action` | `devices` | Trường trong `data` | Ghi chú ngắn |
+|---:|---|---|---|---|
+| 25 | `list` | Không | Không | Trả về mảng thiết bị. |
+| 26 | `updateDevices` | Bắt buộc | `sort?: int`, `name?: string` | Nên cập nhật từng máy để tránh trùng tên/số. |
+| 28 | `adb` | Bắt buộc | `command!: string` | Command đầy đủ, ví dụ `adb -s SERIAL shell ...`. |
+| 29 | `screen` | Bắt buộc | `savePath?: string` | Mặc định lưu PC tại `D:\Pictures`, đồng thời lưu trên `/sdcard/`. |
+| 30 | `pointerEvent` | Bắt buộc | `type!: string`, `x?: string`, `y?: string` | `x/y` là phần trăm `0-100`; swipe loại `6-9` không cần tọa độ. |
+| 31 | `pushEvent` | Bắt buộc | `type!: string` | `1` recent, `2` home, `3` back. |
+| 32 | `writeClipBoard` | Bắt buộc | `content!: string` | Một số model có thể không tương thích clipboard. |
+| 33 | `uploadFile` | Bắt buộc | `filePath!: string`, `isMedia?: string` | `isMedia=0` vào Download; `1` vào DCIM/Camera. |
+| 34 | `pullFile` | Bắt buộc | `filePath!: string`, `savePath?: string` | Thư mục đích phải tồn tại; file trùng tên sẽ bị ghi đè. |
+| 35 | `apkList` | Bắt buộc | Không | Trả map `serial -> [{apk, package}]` cho app bên thứ ba. |
+| 36 | `installApk` | Bắt buộc | `filePath!: string` | Một số hãng có thể hiện bước xác minh cài đặt. |
+| 37 | `uninstallApk` | Bắt buộc | `apk!: string` | `apk` là package name. |
+| 38 | `updateTag` | Không | `oldName!: string`, `name!: string` | Không đổi được hai nhóm mặc định. |
+| 39 | `startApk` | Bắt buộc | `apk!: string` | Mở app theo package name. |
+| 40 | `stopApk` | Bắt buộc | `apk!: string` | Force-stop app theo package name. |
+| 41 | `imeList` | Bắt buộc | Không | Trả map `serial -> [IME package]`. |
+| 42 | `installInputIme` | Bắt buộc | Không | Cài IME Xiaowei; thường được cài tự động khi kết nối. |
+| 43 | `selectIme` | Bắt buộc | `ime!: string` | Chọn IME theo component/package trả về từ `imeList`. |
+| 44 | `inputText` | Bắt buộc | `content!: string` | Cần focus ô nhập và chọn IME Xiaowei; xuống dòng dùng `\\n`. |
+| 45 | `getTags` | Không | Không | Trả danh sách `{name, ids}`. |
+| 46 | `addTag` | Không | `name!: string` | Tạo nhóm/tag. |
+| 47 | `removeTag` | Không | `name!: string` | Không xóa được hai nhóm mặc định. |
+| 48 | `addTagDevice` | Bắt buộc | `name!: string` | Thêm các device vào tag. |
+| 49 | `removeTagDevice` | Bắt buộc | `name!: string` | Xóa các device khỏi tag. |
+| 252 | `adb_shell` | Bắt buộc | `command!: string` | Chỉ truyền phần command sau `adb shell`. |
+| 380 | `actionTasks` | Không | Không | Trả action `id`, `name`, `createTime`, `durationSecond`. |
+| 382 | `actionCreate` | Bắt buộc | `actionName!`, `startTimes?`, `count!`, `taskInterval!`, `deviceInterval!` | `startTimes` định dạng `YYYY-MM-DD HH:mm:ss`; interval tính bằng ms. |
+| 381 | `actionRemove` | Bắt buộc | `name!: string` | `name` nhận tên hoặc ID action. |
+| 379 | `autojsTasks` | Không | Không | Trả task với `isOk`, `label`, `value` (đường dẫn). |
+| 378 | `autojsCreate` | Bắt buộc | `path!`, `startTimes?`, `count!`, `taskInterval!`, `deviceInterval!` | Chạy task theo đường dẫn lấy từ `autojsTasks`. |
+| 377 | `autojsRemove` | Bắt buộc | `name!: string` | `name` là `label` trả về từ `autojsTasks`. |
+
+### Các lỗi/điểm không nhất quán trong docs Xiaowei
+
+- Article `33` ghi nhầm `action: "writeClipBoard"` trong bảng tham số; code mẫu
+  dùng `action: "uploadFile"`, phù hợp tên API.
+- Article `35` ghi nhầm `action: "pullFile"` trong bảng; code mẫu dùng
+  `action: "apkList"`.
+- Article `377` ghi nhầm `action: "actionRemove"` trong bảng; code mẫu dùng
+  `action: "autojsRemove"`.
+- Article `377`, `378`, `381`, `382` mô tả `data` là `Array`, nhưng ví dụ gửi
+  `data` dưới dạng JSON object. Nên làm theo code mẫu object.
+- Docs không có API proxy riêng và không có trường `username/password` cho proxy.
+  Với tool này, API liên quan trực tiếp vẫn là `adb` hoặc `adb_shell`.
 
 ## API `list` - Lấy Danh Sách Thiết Bị
 
@@ -339,4 +397,3 @@ Cách xử lý:
 - Nếu phone kết nối bằng Wi-Fi hoặc OTG, `devices` nên là `IP:port`.
 - Kiểm tra lại `devices`, tên field, format JSON và thông tin device.
 - Cập nhật Xiaowei lên bản mới, reconnect device rồi thử lại.
-
