@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     commands.add_parser("devices", help="Liệt kê thiết bị ADB.")
+    commands.add_parser("gui", help="Mở giao diện Tkinter.")
 
     status = commands.add_parser("status", help="Đọc http_proxy hiện tại trên thiết bị.")
     status.add_argument("--serial", action="append", help="Serial cần xem; có thể lặp lại.")
@@ -251,6 +252,15 @@ def main(argv: list[str] | None = None) -> int:
         state = StateStore(args.state)
         if args.command == "devices":
             return command_devices(adb)
+        if args.command == "gui":
+            from .gui import launch_gui
+
+            return launch_gui(
+                adb_path=args.adb,
+                backend=args.backend,
+                xiaowei_url=args.xiaowei_url,
+                state_path=args.state,
+            )
         if args.command == "status":
             return command_status(adb, state, args)
         if args.command == "apply":

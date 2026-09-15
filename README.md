@@ -31,6 +31,20 @@ python -m xiaowei_proxy_manager --backend xiaowei devices
 python -m xiaowei_proxy_manager status --all
 ```
 
+### Giao diện Tkinter
+
+Mở UI từ thư mục cha của package:
+
+```powershell
+cd C:\Users\ADMIN\github
+python -m xiaowei_proxy_manager gui
+```
+
+UI hiển thị serial, trạng thái, model, proxy global hiện tại và IP public đọc
+từ chính thiết bị sau khi proxy được áp dụng. Nút `Refresh devices` đọc lại
+toàn bộ các giá trị này. Nếu Android không có `curl` hoặc `wget`, cột IP sẽ
+hiện `(không đọc được)`.
+
 Proxy đầu vào có dạng bắt buộc:
 
 ```text
