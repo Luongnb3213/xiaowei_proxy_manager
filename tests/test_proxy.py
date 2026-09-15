@@ -1,6 +1,6 @@
 import unittest
 
-from xiaowei_proxy_manager.proxy import ProxyParseError, parse_proxy
+from xiaowei_proxy_manager.core.proxy import ProxyParseError, parse_proxy
 
 
 class ProxyParserTests(unittest.TestCase):

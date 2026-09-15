@@ -3,7 +3,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from xiaowei_proxy_manager.proxy_pool import load_proxy_file, parse_proxy_rows, parse_proxy_text
+from xiaowei_proxy_manager.core.proxy_pool import load_proxy_file, parse_proxy_rows, parse_proxy_text
 
 
 class ProxyPoolTests(unittest.TestCase):

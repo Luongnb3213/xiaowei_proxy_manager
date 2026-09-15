@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from xiaowei_proxy_manager.config import api_kwargs, gateway_kwargs, load_config
+from xiaowei_proxy_manager.core.config import api_kwargs, gateway_kwargs, load_config
 
 
 class ConfigTests(unittest.TestCase):

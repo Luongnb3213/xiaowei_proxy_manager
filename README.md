@@ -49,6 +49,14 @@ một lần nếu cần đổi IP hoặc port:
     "end_port": 11000,
     "connect_timeout": 20,
     "idle_timeout": 300
+  },
+  "logging": {
+    "level": "INFO",
+    "dir": "logs",
+    "file": "proxy_manager.log",
+    "max_bytes": 5242880,
+    "backup_count": 5,
+    "console": true
   }
 }
 ```
@@ -71,6 +79,31 @@ residential.byteproxies.io:8888:pool-basic-cc-jp-city-kyoto-sid-79099880-ttl-30:
 `HOST:PORT:USER:PASS` tự nó không cho biết proxy server có yêu cầu TLS khi kết
 nối tới chính proxy hay không; nếu nhà cung cấp yêu cầu `https://proxy-host`,
 cần bổ sung protocol riêng sau. Không gửi credential này cho Android.
+
+### Log
+
+CLI, GUI và REST API cùng ghi vào `logs/proxy_manager.log` (xoay vòng 5 MB × 5
+file, UTF-8). Mỗi dòng theo format:
+
+```text
+2026-09-15 22:47:03.105 | INFO     | xiaowei_proxy_manager.api | [5713542c] --> POST /api/v1/proxy/apply from 127.0.0.1:63397 body=105B
+2026-09-15 22:47:03.105 | INFO     | xiaowei_proxy_manager.api | [5713542c] payload {"serial": "phone-1", "proxy": "proxy.example:8080:user:***", "allow_auth_unsupported": true}
+2026-09-15 22:47:03.120 | INFO     | xiaowei_proxy_manager.api | [5713542c] result {"mode": "legacy_endpoint", "results": [...], "ok": true}
+2026-09-15 22:47:03.120 | INFO     | xiaowei_proxy_manager.api | [5713542c] <-- 200 OK 15.4ms 189B
+```
+
+Mỗi request có một `[request-id]` 8 ký tự nối dòng `-->`, `payload`, `result`
+và `<--` lại với nhau, kèm thời gian xử lý và số byte. Request lỗi 4xx ghi mức
+`WARNING`, lỗi 5xx ghi `ERROR` kèm traceback.
+
+**Mật khẩu proxy không bao giờ được ghi ra log**: mọi field `password`,
+`proxy`, `proxies`, `upstream`, `text` đều bị che thành `host:port:user:***`
+trước khi ghi. Console chỉ in một dòng cho mỗi bản ghi; traceback đầy đủ nằm
+trong file.
+
+Đổi `logging.level` sang `DEBUG` (hoặc chạy `--log-level DEBUG`) để thêm access
+log gốc của HTTP server. Đặt `logging.console` = `false` nếu không muốn log ra
+màn hình. Thư mục `logs/` đã nằm trong `.gitignore`.
 
 ### REST API local
 
@@ -210,8 +243,10 @@ service khác có thể gọi API trong lúc app đang mở mà không cần ch�
 
 Nút `Import list` nhận file `.txt`, `.csv` hoặc `.xlsx`. File có thể có một cột
 `proxy` chứa `host:port:username:password`, hoặc bốn cột `host`, `port`,
-`username`, `password`. Nút `Rotate proxy` lấy proxy tiếp theo chưa dùng trong
-pool nếu còn proxy trống; nếu tất cả đã dùng thì sẽ xoay vòng lại từ đầu.
+`username`, `password`. Nút `Rotate proxy` bốc random proxy trong pool và chỉ
+né các proxy đang được thiết bị khác giữ trong gateway mapping. Khi thiết bị
+`Clear proxy`, `Rollback` sang proxy khác hoặc mapping bị gỡ, proxy cũ được mở
+lại để thiết bị khác có thể dùng.
 
 Proxy đầu vào có dạng bắt buộc:
 

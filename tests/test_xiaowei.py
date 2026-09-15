@@ -1,6 +1,6 @@
 import unittest
 
-from xiaowei_proxy_manager.xiaowei import XiaoweiClient, XiaoweiResponse
+from xiaowei_proxy_manager.backends.xiaowei import XiaoweiClient, XiaoweiResponse
 
 
 class FakeXiaoweiClient(XiaoweiClient):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -236,15 +237,14 @@ class StateStore:
         if not items:
             return None
         avoid = avoid_raw or set()
-        cursor = int(pool.get("cursor", 0) or 0) % len(items)
-        selected_index = cursor
-        for offset in range(len(items)):
-            index = (cursor + offset) % len(items)
-            raw = str(items[index]["raw"])
-            if raw not in avoid:
-                selected_index = index
-                break
-        selected = items[selected_index]
+        candidates = [
+            (index, item)
+            for index, item in enumerate(items)
+            if str(item["raw"]) not in avoid
+        ]
+        if not candidates:
+            return None
+        selected_index, selected = random.choice(candidates)
         proxy = Proxy.from_raw(str(selected["raw"]))
         if advance:
             selected["last_used_by"] = mark_used_by

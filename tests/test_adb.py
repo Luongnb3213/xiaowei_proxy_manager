@@ -1,7 +1,7 @@
 import subprocess
 import unittest
 
-from xiaowei_proxy_manager.adb import AdbClient
+from xiaowei_proxy_manager.backends.adb import AdbClient
 
 
 class FakeRunner:

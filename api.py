@@ -1,21 +1,34 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
+import time
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .adb import AdbError, Device
+from .backends.adb import AdbError, Device
 from .gateway import GatewayError, LocalProxyGateway
-from .proxy import Proxy, ProxyParseError, parse_proxy
-from .proxy_pool import load_proxy_file, parse_proxy_text
-from .state import StateStore
-from .xiaowei import XiaoweiError
+from .core.proxy import Proxy, ProxyParseError, parse_proxy
+from .core.proxy_pool import load_proxy_file, parse_proxy_text
+from .core.state import StateStore
+from .backends.xiaowei import XiaoweiError
+from .core.logging_config import get_logger
 
 
 API_PREFIX = "/api/v1"
+
+LOGGER = get_logger("api")
+
+# Khóa chứa mật khẩu trần: luôn thay bằng *** trước khi ghi log.
+_SECRET_KEYS = frozenset({"password", "pass", "pwd", "secret", "token"})
+# Khóa chứa chuỗi proxy host:port:user:pass: chỉ giữ phần không nhạy cảm.
+_PROXY_KEYS = frozenset({"proxy", "proxies", "upstream", "text"})
+# Log là để đọc, không phải để dump. Cắt bớt payload/kết quả quá dài.
+_LOG_VALUE_LIMIT = 1500
 
 
 class ApiRequestError(ValueError):
@@ -417,9 +430,6 @@ class ProxyManagerService:
             for device_serial, value in self.state.gateway_mappings().items()
             if device_serial != serial and value.get("upstream")
         }
-        current = self.state.gateway_mapping(serial)
-        if current and current.get("upstream"):
-            used.add(str(current["upstream"]))
         proxy = self.state.next_proxy_from_pool(
             avoid_raw=used,
             mark_used_by=serial,
@@ -540,6 +550,84 @@ class ProxyApiHandler(BaseHTTPRequestHandler):
     server: "ProxyApiServer"
     protocol_version = "HTTP/1.1"
     server_version = "XiaoweiProxyManager/0.2"
+
+    # Giá trị mặc định ở cấp class để log không bao giờ vỡ vì thiếu attribute
+    # (ví dụ khi client ngắt kết nối giữa chừng).
+    _request_id = "--------"
+    _status_code: int | None = None
+    _response_bytes = 0
+    _request_logged = False
+    _started_at = 0.0
+
+    # --- Access log ---------------------------------------------------
+    # Mọi request đều chui qua handle_one_request() -> parse_request() ->
+    # do_*() nên chỉ cần móc vào ba điểm chung này là log được toàn bộ API,
+    # kể cả request hỏng, mà không phải đụng vào phần routing.
+
+    def handle_one_request(self) -> None:
+        self._request_id = uuid.uuid4().hex[:8]
+        self._status_code = None
+        self._response_bytes = 0
+        self._request_logged = False
+        self._started_at = time.perf_counter()
+        try:
+            super().handle_one_request()
+        finally:
+            self._log_request_end()
+
+    def parse_request(self) -> bool:
+        parsed = super().parse_request()
+        if parsed:
+            self._log_request_start()
+        return parsed
+
+    def send_response_only(self, code: Any, message: str | None = None) -> None:
+        # Mọi đường ghi status (send_response lẫn send_error) đều đi qua đây.
+        self._status_code = int(code)
+        super().send_response_only(code, message)
+
+    def _log_request_start(self) -> None:
+        self._request_logged = True
+        LOGGER.info(
+            "[%s] --> %s %s from %s body=%sB",
+            self._request_id,
+            self.command,
+            self.path,
+            self._client_label(),
+            self.headers.get("Content-Length", "0"),
+        )
+
+    def _log_request_end(self) -> None:
+        if not self._request_logged:
+            return
+        elapsed_ms = (time.perf_counter() - self._started_at) * 1000
+        status = self._status_code
+        if status is None:
+            LOGGER.warning(
+                "[%s] <-- không gửi được response (%.1fms)",
+                self._request_id,
+                elapsed_ms,
+            )
+            return
+        try:
+            phrase = HTTPStatus(status).phrase
+        except ValueError:
+            phrase = "?"
+        LOGGER.log(
+            logging.INFO if status < 400 else logging.WARNING,
+            "[%s] <-- %s %s %.1fms %sB",
+            self._request_id,
+            status,
+            phrase,
+            elapsed_ms,
+            self._response_bytes,
+        )
+
+    def _client_label(self) -> str:
+        address = self.client_address
+        if isinstance(address, tuple) and len(address) >= 2:
+            return f"{address[0]}:{address[1]}"
+        return str(address)
 
     def do_OPTIONS(self) -> None:
         self._send_json(HTTPStatus.NO_CONTENT, None)
@@ -735,6 +823,8 @@ class ProxyApiHandler(BaseHTTPRequestHandler):
             raise ApiRequestError("Body phải là JSON hợp lệ.") from exc
         if not isinstance(payload, dict):
             raise ApiRequestError("Body JSON phải là object.")
+        if payload:
+            LOGGER.info("[%s] payload %s", self._request_id, _log_json(payload))
         return payload
 
     def _resolve_target_serials(self, payload: dict[str, Any]) -> list[str]:
@@ -752,6 +842,7 @@ class ProxyApiHandler(BaseHTTPRequestHandler):
         return _target_serials(payload)
 
     def _send_operation(self, data: dict[str, Any]) -> None:
+        LOGGER.info("[%s] result %s", self._request_id, _log_json(data))
         self._send_json(HTTPStatus.OK, {"ok": data["ok"], "data": data})
 
     def _send_exception(self, exc: Exception) -> None:
@@ -767,6 +858,19 @@ class ProxyApiHandler(BaseHTTPRequestHandler):
         else:
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             code = "internal_error"
+        if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            # Lỗi không lường trước: cần cả traceback để còn truy được.
+            LOGGER.error(
+                "[%s] %s: %s",
+                self._request_id,
+                code,
+                _safe_error(exc),
+                exc_info=exc,
+            )
+        else:
+            LOGGER.warning(
+                "[%s] %s: %s", self._request_id, code, _safe_error(exc)
+            )
         self._send_json(
             status,
             {"ok": False, "error": {"code": code, "message": _safe_error(exc)}},
@@ -782,6 +886,7 @@ class ProxyApiHandler(BaseHTTPRequestHandler):
                 separators=(",", ":"),
             ).encode("utf-8")
         )
+        self._response_bytes = len(encoded)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
@@ -793,7 +898,14 @@ class ProxyApiHandler(BaseHTTPRequestHandler):
             self.wfile.write(encoded)
 
     def log_message(self, format: str, *args: Any) -> None:
-        return
+        # BaseHTTPRequestHandler mặc định in thẳng stderr. Trước đây hàm này
+        # nuốt hết nên không thấy gì; giờ đẩy về logger ở mức DEBUG để không
+        # trùng với access log ở trên.
+        try:
+            message = format % args
+        except (TypeError, ValueError):
+            message = f"{format} {args}"
+        LOGGER.debug("[%s] %s", self._request_id, message)
 
 
 class ProxyApiServer(ThreadingHTTPServer):
@@ -806,6 +918,7 @@ class ProxyApiServer(ThreadingHTTPServer):
     ):
         self.service = service
         super().__init__(server_address, ProxyApiHandler)
+        LOGGER.info("Bind API server tại %s:%s", *self.server_address[:2])
 
 
 def serve_api(
@@ -822,13 +935,15 @@ def serve_api(
         service.start()
         if ready:
             ready(server)
+        LOGGER.info("API đang chạy tại http://%s:%s", host, server.server_address[1])
         print(f"API đang chạy tại http://{host}:{server.server_address[1]}")
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        LOGGER.info("Nhận Ctrl+C, đang dừng API.")
     finally:
         server.server_close()
         service.close()
+        LOGGER.info("API đã dừng.")
     return 0
 
 
@@ -942,3 +1057,60 @@ def _device_action_path(path: str) -> tuple[str | None, str | None]:
 
 def _safe_error(exc: Exception) -> str:
     return str(exc) or exc.__class__.__name__
+
+
+def _log_json(value: Any) -> str:
+    """Serialize để ghi log: che mật khẩu, cắt ngắn nếu quá dài."""
+    try:
+        text = json.dumps(_redact(value), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = repr(value)
+    if len(text) > _LOG_VALUE_LIMIT:
+        return f"{text[:_LOG_VALUE_LIMIT]}... (cắt bớt, tổng {len(text)} ký tự)"
+    return text
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_field(str(key), item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    return value
+
+
+def _redact_field(key: str, value: Any) -> Any:
+    lowered = key.lower()
+    if lowered in _SECRET_KEYS:
+        return "***"
+    if lowered in _PROXY_KEYS:
+        return _redact_proxy(value)
+    return _redact(value)
+
+
+def _redact_proxy(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_proxy_text(value)
+    if isinstance(value, list):
+        return [_redact_proxy(item) for item in value]
+    if isinstance(value, dict):
+        return _redact(value)
+    return value
+
+
+def _redact_proxy_text(value: str) -> str:
+    lines = value.splitlines()
+    if len(lines) != 1:
+        return "\n".join(_redact_proxy_text(line) for line in lines)
+    stripped = value.strip()
+    if not stripped or stripped.startswith("#"):
+        return value
+    try:
+        return parse_proxy(stripped).redacted
+    except ProxyParseError:
+        # Đếm ':' ngoài phần [ipv6] để biết chuỗi có kèm credential hay không.
+        tail = stripped.split("]", 1)[1] if stripped.startswith("[") else stripped
+        if tail.count(":") < 2:
+            # Chỉ là host:port (hoặc endpoint đã che sẵn): không có gì để lộ.
+            return value
+        # Có credential nhưng không parse nổi -> không biết mật khẩu nằm ở đâu.
+        return "***"

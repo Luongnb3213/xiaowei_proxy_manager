@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_CONFIG = Path(__file__).resolve().parent / "config.json"
+DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.json"
 
 DEFAULT_CONFIG_DATA: dict[str, dict[str, Any]] = {
     "api": {
@@ -19,6 +19,14 @@ DEFAULT_CONFIG_DATA: dict[str, dict[str, Any]] = {
         "end_port": 11000,
         "connect_timeout": 20,
         "idle_timeout": 300,
+    },
+    "logging": {
+        "level": "INFO",
+        "dir": "logs",
+        "file": "proxy_manager.log",
+        "max_bytes": 5242880,
+        "backup_count": 5,
+        "console": True,
     },
 }
 
@@ -75,6 +83,23 @@ def api_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def logging_kwargs(config: dict[str, Any]) -> dict[str, Any]:
+    section = config.get("logging")
+    if not isinstance(section, dict):
+        raise ValueError("config.json cần object 'logging'.")
+    directory = Path(str(section.get("dir") or "logs"))
+    if not directory.is_absolute():
+        directory = DEFAULT_CONFIG.parent / directory
+    return {
+        "level": str(section.get("level") or "INFO").upper(),
+        "directory": directory,
+        "filename": str(section.get("file") or "proxy_manager.log"),
+        "max_bytes": int(section.get("max_bytes", 5 * 1024 * 1024)),
+        "backup_count": int(section.get("backup_count", 5)),
+        "console": bool(section.get("console", True)),
+    }
+
+
 def config_value(args: Any, config: dict[str, Any], section: str, key: str) -> Any:
     attr = key if section == "api" else f"{section}_{key}"
     override = getattr(args, attr, None)
@@ -85,6 +110,7 @@ def _validate_config(config: dict[str, Any]) -> None:
     required = {
         "api": ("host", "port"),
         "gateway": ("bind_host", "advertised_host", "start_port", "end_port"),
+        "logging": ("level", "dir", "file"),
     }
     for section, keys in required.items():
         if not isinstance(config.get(section), dict):
@@ -94,3 +120,4 @@ def _validate_config(config: dict[str, Any]) -> None:
                 raise ValueError(f"config.json thiếu '{section}.{key}'.")
     api_kwargs(config)
     gateway_kwargs(config)
+    logging_kwargs(config)

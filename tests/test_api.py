@@ -3,13 +3,15 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from xiaowei_proxy_manager.adb import Device
+from xiaowei_proxy_manager.backends.adb import Device
 from xiaowei_proxy_manager.api import ProxyApiServer, ProxyManagerService
 from xiaowei_proxy_manager.gateway import LocalProxyGateway
-from xiaowei_proxy_manager.state import StateStore
+from xiaowei_proxy_manager.core.proxy import parse_proxy
+from xiaowei_proxy_manager.core.state import StateStore
 
 
 class FakeClient:
@@ -217,7 +219,12 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             first_endpoint = payload["data"]["results"][0]["local_endpoint"]
             self.assertEqual(self.client.proxies["phone-1"], first_endpoint)
-            self.assertIn("first.example:8080:user:***", json.dumps(payload))
+            self.assertRegex(
+                json.dumps(payload),
+                r"(first|second)\.example:8080:user:\*\*\*",
+            )
+            self.assertNotIn("first-secret", json.dumps(payload))
+            self.assertNotIn("second-secret", json.dumps(payload))
 
             status, payload = self.request(
                 "POST",
@@ -228,10 +235,42 @@ class ApiTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["data"]["results"][0]["local_endpoint"], first_endpoint)
             self.assertEqual(self.client.proxies["phone-1"], first_endpoint)
-            self.assertIn("second.example:8080:user:***", json.dumps(payload))
+            self.assertRegex(
+                json.dumps(payload),
+                r"(first|second)\.example:8080:user:\*\*\*",
+            )
+            self.assertNotIn("first-secret", json.dumps(payload))
             self.assertNotIn("second-secret", json.dumps(payload))
         finally:
             gateway.close()
+
+    def test_pool_selection_only_locks_proxies_used_by_other_devices(self):
+        state = self.server.service.state
+        first = parse_proxy("first.example:8080:user:first-secret")
+        second = parse_proxy("second.example:8080:user:second-secret")
+        state.set_proxy_pool([first, second])
+        state.set_gateway_mapping(
+            "phone-1",
+            local_port=19120,
+            bind_host="127.0.0.1",
+            advertised_host="127.0.0.1",
+            upstream=first,
+        )
+        state.set_gateway_mapping(
+            "phone-2",
+            local_port=19121,
+            bind_host="127.0.0.1",
+            advertised_host="127.0.0.1",
+            upstream=second,
+        )
+
+        selected = self.server.service._next_available_pool_proxy("phone-1", advance=False)
+        self.assertEqual(selected.raw, first.raw)
+
+        state.remove_gateway_mapping("phone-2")
+        with patch("xiaowei_proxy_manager.core.state.random.choice", side_effect=lambda items: items[-1]):
+            selected = self.server.service._next_available_pool_proxy("phone-1", advance=False)
+        self.assertEqual(selected.raw, second.raw)
 
 
 if __name__ == "__main__":

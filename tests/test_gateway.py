@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 
 from xiaowei_proxy_manager.gateway import LocalProxyGateway
-from xiaowei_proxy_manager.proxy import parse_proxy
-from xiaowei_proxy_manager.state import StateStore
+from xiaowei_proxy_manager.core.proxy import parse_proxy
+from xiaowei_proxy_manager.core.state import StateStore
 
 
 def _read_headers(sock):

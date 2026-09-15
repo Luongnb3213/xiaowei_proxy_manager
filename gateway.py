@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
 
-from .proxy import Proxy
-from .state import StateStore
+from .core.proxy import Proxy
+from .core.state import StateStore
 
 
 class GatewayError(RuntimeError):
@@ -258,6 +258,8 @@ class LocalProxyGateway:
             return
         if not 1 <= mapping.local_port <= 65535:
             raise GatewayError(f"Local port không hợp lệ: {mapping.local_port}.")
+        if _port_accepts_connections(mapping.advertised_host, mapping.local_port):
+            raise OSError(f"Port {mapping.local_port} đang có listener trên {mapping.advertised_host}.")
         server = _GatewayServer(
             (mapping.bind_host, mapping.local_port),
             self,
@@ -714,6 +716,14 @@ def detect_advertised_host() -> str:
         return "127.0.0.1"
     finally:
         sock.close()
+
+
+def _port_accepts_connections(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except OSError:
+        return False
 
 
 def _require_device_id(device_id: str) -> str:

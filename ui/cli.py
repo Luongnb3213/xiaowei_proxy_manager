@@ -5,15 +5,21 @@ import csv
 import sys
 from pathlib import Path
 
-from .adb import AdbClient, AdbError, Device
-from .assignments import load_assignments
-from .config import DEFAULT_CONFIG, config_value, load_config
-from .proxy import Proxy, ProxyParseError, parse_proxy
-from .state import StateStore
-from .xiaowei import XiaoweiClient, XiaoweiError
+from ..backends.adb import AdbClient, AdbError, Device
+from ..core.assignments import load_assignments
+from ..core.config import (
+    DEFAULT_CONFIG,
+    config_value,
+    load_config,
+    logging_kwargs,
+)
+from ..core.logging_config import get_logger, setup_logging
+from ..core.proxy import Proxy, ProxyParseError, parse_proxy
+from ..core.state import StateStore
+from ..backends.xiaowei import XiaoweiClient, XiaoweiError
 
 
-DEFAULT_STATE = Path(__file__).resolve().parent / "data" / "state.json"
+DEFAULT_STATE = Path(__file__).resolve().parent.parent / "data" / "state.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,8 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         choices=("adb", "xiaowei"),
-        default="adb",
-        help="Backend điều khiển thiết bị.",
+        default=None,
+        help="Backend điều khiển thiết bị; GUI mặc định dùng xiaowei, CLI mặc định dùng adb.",
     )
     parser.add_argument(
         "--xiaowei-url",
@@ -35,6 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--state", default=str(DEFAULT_STATE), help="Đường dẫn state JSON.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="File JSON cấu hình API và gateway.")
+    parser.add_argument(
+        "--log-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default=None,
+        help="Ghi đè logging.level trong config.json.",
+    )
 
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -261,11 +273,32 @@ def command_rollback(adb: AdbClient, state: StateStore, args: argparse.Namespace
     return 0
 
 
+def _setup_logging_from_args(args: argparse.Namespace) -> None:
+    """Bật log sớm nhất có thể.
+
+    Config hỏng thì vẫn phải log được (để còn ghi lại chính lỗi config đó),
+    nên rơi về mặc định thay vì ném exception.
+    """
+    config_path = getattr(args, "config", DEFAULT_CONFIG)
+    try:
+        kwargs = logging_kwargs(load_config(config_path))
+    except (ValueError, OSError):
+        kwargs = logging_kwargs({"logging": {}})
+    level = getattr(args, "log_level", None)
+    if level:
+        kwargs["level"] = level
+    setup_logging(**kwargs)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _setup_logging_from_args(args)
+    logger = get_logger("cli")
+    backend = args.backend or ("xiaowei" if args.command == "gui" else "adb")
+    logger.info("CLI: command=%s backend=%s", args.command, backend)
     try:
-        adb = XiaoweiClient(args.xiaowei_url) if args.backend == "xiaowei" else AdbClient(args.adb)
+        adb = XiaoweiClient(args.xiaowei_url) if backend == "xiaowei" else AdbClient(args.adb)
         state = StateStore(args.state)
         if args.command == "devices":
             return command_devices(adb)
@@ -274,14 +307,14 @@ def main(argv: list[str] | None = None) -> int:
 
             return launch_gui(
                 adb_path=args.adb,
-                backend=args.backend,
+                backend=backend,
                 xiaowei_url=args.xiaowei_url,
                 state_path=args.state,
                 config_path=args.config,
             )
         if args.command == "serve":
-            from .api import ProxyManagerService, serve_api
-            from .gateway import LocalProxyGateway
+            from ..api import ProxyManagerService, serve_api
+            from ..gateway import LocalProxyGateway
 
             config = load_config(args.config)
             api_host = config_value(args, config, "api", "host")
@@ -291,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                 ProxyManagerService(
                     adb,
                     state,
-                    backend=args.backend,
+                    backend=backend,
                     gateway=LocalProxyGateway(
                         state,
                         bind_host=config_value(args, config, "gateway", "bind_host"),
@@ -315,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
             return command_rollback(adb, state, args)
         parser.error("Command không hợp lệ.")
     except (AdbError, XiaoweiError, ProxyParseError, ValueError, RuntimeError) as exc:
+        logger.error("CLI lỗi (%s): %s", args.command, exc, exc_info=exc)
         print(f"LỖI: {exc}", file=sys.stderr)
         return 1
 
