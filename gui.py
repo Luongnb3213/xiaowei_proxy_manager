@@ -1,15 +1,38 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
-from .adb import AdbClient, AdbError, Device
-from .proxy import ProxyParseError, parse_proxy
-from .state import StateStore
-from .xiaowei import XiaoweiClient
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from xiaowei_proxy_manager.adb import AdbClient, Device
+    from xiaowei_proxy_manager.api import ProxyApiServer, ProxyManagerService
+    from xiaowei_proxy_manager.config import (
+        DEFAULT_CONFIG,
+        api_kwargs,
+        gateway_kwargs,
+        load_config,
+    )
+    from xiaowei_proxy_manager.gateway import LocalProxyGateway
+    from xiaowei_proxy_manager.proxy import ProxyParseError, parse_proxy
+    from xiaowei_proxy_manager.state import StateStore
+    from xiaowei_proxy_manager.xiaowei import XiaoweiClient
+else:
+    from .adb import AdbClient, Device
+    from .api import ProxyApiServer, ProxyManagerService
+    from .config import DEFAULT_CONFIG, api_kwargs, gateway_kwargs, load_config
+    from .gateway import LocalProxyGateway
+    from .proxy import ProxyParseError, parse_proxy
+    from .state import StateStore
+    from .xiaowei import XiaoweiClient
+
+
+DEFAULT_STATE = Path(__file__).resolve().parent / "data" / "state.json"
 
 
 class ProxyManagerApp:
@@ -20,7 +43,8 @@ class ProxyManagerApp:
         adb_path: str | None = None,
         backend: str = "adb",
         xiaowei_url: str = "ws://127.0.0.1:22222/",
-        state_path: str,
+        state_path: str = str(DEFAULT_STATE),
+        config_path: str = str(DEFAULT_CONFIG),
     ):
         self.root = root
         self.root.title("Xiaowei Proxy Manager")
@@ -29,6 +53,9 @@ class ProxyManagerApp:
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.devices: dict[str, Device] = {}
         self.state = StateStore(state_path)
+        self.config_path = config_path
+        self.config = load_config(config_path)
+        self.gateway = LocalProxyGateway(self.state, **gateway_kwargs(self.config))
 
         self.backend_var = tk.StringVar(value=backend)
         self.adb_var = tk.StringVar(value=adb_path or "adb")
@@ -37,11 +64,20 @@ class ProxyManagerApp:
         self.port_var = tk.StringVar()
         self.user_var = tk.StringVar()
         self.password_var = tk.StringVar()
-        self.allow_auth_var = tk.BooleanVar(value=False)
         self.dry_run_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Sẵn sàng")
+        self.pool_var = tk.StringVar(value=self._pool_label())
+        self.api_server: ProxyApiServer | None = None
+        self.api_thread: threading.Thread | None = None
+        self.api_url: str | None = None
+        self.api_error: str | None = None
+
+        self.gateway.start()
+        self._start_api_server()
+        self.gateway_var = tk.StringVar(value=self._gateway_label())
 
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(100, self._poll_events)
 
     def _build_ui(self) -> None:
@@ -58,6 +94,7 @@ class ProxyManagerApp:
         ttk.Label(top, text="Xiaowei URL").grid(row=0, column=4, sticky="w")
         ttk.Entry(top, textvariable=self.xiaowei_var, width=32).grid(row=0, column=5, padx=6, sticky="ew")
         ttk.Button(top, text="Refresh devices", command=self.refresh_devices).grid(row=0, column=6, padx=(8, 0))
+        ttk.Label(top, textvariable=self.gateway_var).grid(row=1, column=0, columnspan=7, sticky="w", pady=(8, 0))
         top.columnconfigure(3, weight=1)
         top.columnconfigure(5, weight=1)
 
@@ -69,7 +106,7 @@ class ProxyManagerApp:
             "serial": "Serial", "state": "Trạng thái", "model": "Thiết bị",
             "proxy": "Proxy đang dùng", "public_ip": "IP sau proxy",
         }
-        widths = {"serial": 145, "state": 95, "model": 250, "proxy": 210, "public_ip": 160}
+        widths = {"serial": 145, "state": 95, "model": 230, "proxy": 330, "public_ip": 150}
         for column in columns:
             self.tree.heading(column, text=headings[column])
             self.tree.column(column, width=widths[column], anchor="w")
@@ -78,7 +115,7 @@ class ProxyManagerApp:
         scroll.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=scroll.set)
 
-        form = ttk.LabelFrame(self.root, text="Proxy", padding=10)
+        form = ttk.LabelFrame(self.root, text="Upstream proxy", padding=10)
         form.pack(fill="x", padx=10, pady=(0, 8))
         fields = (
             ("Host", self.host_var), ("Port", self.port_var),
@@ -90,15 +127,15 @@ class ProxyManagerApp:
             entry.grid(row=0, column=index * 2 + 1, padx=(5, 14), sticky="ew")
         for column in range(0, 8, 2):
             form.columnconfigure(column + 1, weight=1)
-        ttk.Checkbutton(form, text="Cho phép endpoint-only", variable=self.allow_auth_var).grid(
+        ttk.Checkbutton(form, text="Dry run", variable=self.dry_run_var).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
-        ttk.Checkbutton(form, text="Dry run", variable=self.dry_run_var).grid(
-            row=1, column=2, columnspan=2, sticky="w", pady=(8, 0)
-        )
-        ttk.Button(form, text="Apply proxy", command=self.apply_proxy).grid(row=1, column=5, padx=5, pady=(8, 0))
-        ttk.Button(form, text="Rollback", command=self.rollback).grid(row=1, column=6, padx=5, pady=(8, 0))
-        ttk.Button(form, text="Clear proxy", command=self.clear_proxy).grid(row=1, column=7, padx=5, pady=(8, 0))
+        ttk.Label(form, textvariable=self.pool_var).grid(row=1, column=2, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Button(form, text="Import list", command=self.import_proxy_pool).grid(row=1, column=5, padx=5, pady=(8, 0))
+        ttk.Button(form, text="Rotate proxy", command=self.rotate_proxy).grid(row=1, column=6, padx=5, pady=(8, 0))
+        ttk.Button(form, text="Apply proxy", command=self.apply_proxy).grid(row=1, column=7, padx=5, pady=(8, 0))
+        ttk.Button(form, text="Rollback", command=self.rollback).grid(row=2, column=6, padx=5, pady=(8, 0))
+        ttk.Button(form, text="Clear proxy", command=self.clear_proxy).grid(row=2, column=7, padx=5, pady=(8, 0))
 
         bottom = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         bottom.pack(fill="both")
@@ -110,6 +147,61 @@ class ProxyManagerApp:
         if self.backend_var.get() == "xiaowei":
             return XiaoweiClient(self.xiaowei_var.get().strip())
         return AdbClient(self.adb_var.get().strip() or "adb")
+
+    def _service(self) -> ProxyManagerService:
+        return ProxyManagerService(
+            self._client(),
+            self.state,
+            backend=self.backend_var.get(),
+            gateway=self.gateway,
+        )
+
+    def _gateway_label(self) -> str:
+        api_text = f"API: {self.api_url}" if self.api_url else f"API: lỗi mở port ({self.api_error})"
+        return (
+            f"Gateway: {self.gateway.bind_host} -> {self.gateway.advertised_host}, "
+            f"ports {self.gateway.start_port}-{self.gateway.end_port}; {api_text}; "
+            f"config {self.config_path}"
+        )
+
+    def _pool_label(self) -> str:
+        count = self.state.proxy_pool_summary()["count"]
+        return f"Proxy pool: {count} proxy"
+
+    def _start_api_server(self) -> None:
+        api = api_kwargs(self.config)
+        host = api["host"]
+        port = api["port"]
+        if host not in {"127.0.0.1", "localhost"}:
+            self.api_error = "api.host chỉ được là 127.0.0.1 hoặc localhost"
+            return
+        try:
+            service = ProxyManagerService(
+                self._client(),
+                self.state,
+                backend=self.backend_var.get(),
+                gateway=self.gateway,
+            )
+            self.api_server = ProxyApiServer((host, port), service)
+            self.api_thread = threading.Thread(
+                target=self.api_server.serve_forever,
+                name="proxy-manager-api-ui",
+                daemon=True,
+            )
+            self.api_thread.start()
+            bound_host, bound_port = self.api_server.server_address
+            self.api_url = f"http://{bound_host}:{bound_port}"
+        except OSError as exc:
+            self.api_error = str(exc)
+
+    def close(self) -> None:
+        if self.api_server is not None:
+            self.api_server.shutdown()
+            self.api_server.server_close()
+        if self.api_thread is not None:
+            self.api_thread.join(timeout=2)
+        self.gateway.close()
+        self.root.destroy()
 
     def _run_async(self, title: str, operation: Callable[[], object]) -> None:
         self.status_var.set(title)
@@ -130,7 +222,8 @@ class ProxyManagerApp:
                 model = client.get_model(device.serial) if device.usable else {}
                 proxy = client.get_global_proxy(device.serial) if device.usable else None
                 public_ip = self._public_ip(client, device.serial) if device.usable else ""
-                rows.append((device, model, proxy, public_ip))
+                mapping = self.gateway.mapping(device.serial)
+                rows.append((device, model, proxy, public_ip, mapping.to_dict() if mapping else None))
             return rows
 
         self._run_async("Đang đọc thiết bị và IP...", operation)
@@ -168,20 +261,69 @@ class ProxyManagerApp:
             return
 
         def operation():
-            client = self._client()
-            before = client.get_global_proxy(serial)
+            service = self._service()
             if self.dry_run_var.get():
-                return f"{serial}: DRY-RUN {before or '(none)'} -> {proxy.endpoint}"
-            if self.backend_var.get() == "adb" and not self.allow_auth_var.get():
-                raise AdbError("ADB global proxy chỉ nhận host:port. Bật 'Cho phép endpoint-only' để tiếp tục.")
-            actual = client.set_global_proxy(serial, proxy.endpoint)
-            if actual != proxy.endpoint:
-                raise AdbError(f"Verify thất bại: nhận {actual!r}, cần {proxy.endpoint!r}")
-            self.state.record_change(serial, before=before, after=actual, label=proxy.redacted)
-            self.state.save()
-            return f"{serial}: OK {before or '(none)'} -> {actual}"
+                result = service.apply(proxy, [serial], dry_run=True)
+                row = result["results"][0]
+                if not row.get("ok"):
+                    raise RuntimeError(row.get("error", "Apply thất bại."))
+                endpoint = row.get("local_endpoint") or "(gateway port mới)"
+                return f"{serial}: DRY-RUN Android -> {endpoint} | upstream {proxy.redacted}"
+            result = service.apply(proxy, [serial])
+            row = result["results"][0]
+            if not row.get("ok"):
+                raise RuntimeError(row.get("error", "Apply thất bại."))
+            return (
+                f"{serial}: OK Android {row.get('android_before') or '(none)'} "
+                f"-> {row.get('android_after')}; upstream {proxy.redacted}"
+            )
 
         self._run_async("Đang áp dụng proxy...", operation)
+
+    def import_proxy_pool(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Import proxy list",
+            filetypes=(
+                ("Proxy list", "*.csv *.txt *.xlsx"),
+                ("CSV", "*.csv"),
+                ("Excel", "*.xlsx"),
+                ("Text", "*.txt"),
+                ("All files", "*.*"),
+            ),
+        )
+        if not path:
+            return
+
+        def operation():
+            result = self._service().import_proxy_pool_from_file(path, append=False)
+            return (
+                f"Đã import {result['count']} proxy từ {Path(path).name} "
+                f"({result['added']} proxy mới)"
+            )
+
+        self._run_async("Đang import proxy list...", operation)
+
+    def rotate_proxy(self) -> None:
+        try:
+            serial = self._selected_serial()
+        except ValueError as exc:
+            messagebox.showerror("Chưa chọn thiết bị", str(exc))
+            return
+
+        def operation():
+            result = self._service().rotate_from_pool([serial], dry_run=self.dry_run_var.get())
+            row = result["results"][0]
+            if not row.get("ok"):
+                raise RuntimeError(row.get("error", "Rotate thất bại."))
+            prefix = "DRY-RUN " if self.dry_run_var.get() else "OK "
+            endpoint = row.get("local_endpoint") or "(gateway port mới)"
+            android_after = row.get("android_after") or endpoint
+            return (
+                f"{serial}: {prefix}rotate -> {row.get('upstream')} | "
+                f"Android {row.get('android_before') or '(none)'} -> {android_after}"
+            )
+
+        self._run_async("Đang xoay proxy...", operation)
 
     def clear_proxy(self) -> None:
         try:
@@ -191,41 +333,32 @@ class ProxyManagerApp:
             return
 
         def operation():
-            client = self._client()
-            before = client.get_global_proxy(serial)
-            if self.dry_run_var.get():
-                return f"{serial}: DRY-RUN {before or '(none)'} -> (none)"
-            actual = client.clear_global_proxy(serial)
-            if actual is not None:
-                raise AdbError(f"Không xóa được proxy: {actual}")
-            self.state.record_change(serial, before=before, after=None, label="clear")
-            self.state.save()
-            return f"{serial}: OK {before or '(none)'} -> (none)"
+            result = self._service().clear([serial], dry_run=self.dry_run_var.get())
+            row = result["results"][0]
+            if not row.get("ok"):
+                raise RuntimeError(row.get("error", "Clear thất bại."))
+            prefix = "DRY-RUN " if self.dry_run_var.get() else "OK "
+            return f"{serial}: {prefix}{row.get('before') or '(none)'} -> (none)"
 
         self._run_async("Đang xóa proxy...", operation)
 
     def rollback(self) -> None:
         try:
             serial = self._selected_serial()
-            target = self.state.rollback_target(serial)
-            if target is None:
-                raise ValueError("Thiết bị này chưa có lịch sử để rollback.")
         except ValueError as exc:
             messagebox.showerror("Không thể rollback", str(exc))
             return
 
         def operation():
-            client = self._client()
-            before = client.get_global_proxy(serial)
-            if self.dry_run_var.get():
-                return f"{serial}: DRY-RUN {before or '(none)'} -> {target or '(none)'}"
-            actual = client.clear_global_proxy(serial) if target == "" else client.set_global_proxy(serial, target)
-            expected = None if target == "" else target
-            if actual != expected:
-                raise AdbError(f"Rollback verify thất bại: {actual!r}")
-            self.state.record_change(serial, before=before, after=actual, label="rollback")
-            self.state.save()
-            return f"{serial}: OK {before or '(none)'} -> {actual or '(none)'}"
+            result = self._service().rollback([serial], dry_run=self.dry_run_var.get())
+            row = result["results"][0]
+            if not row.get("ok"):
+                raise RuntimeError(row.get("error", "Rollback thất bại."))
+            prefix = "DRY-RUN " if self.dry_run_var.get() else "OK "
+            target = row.get("target_upstream") or row.get("after") or "(none)"
+            endpoint = row.get("local_endpoint")
+            suffix = f" qua {endpoint}" if endpoint else ""
+            return f"{serial}: {prefix}rollback -> {target}{suffix}"
 
         self._run_async("Đang rollback...", operation)
 
@@ -239,6 +372,7 @@ class ProxyManagerApp:
                         self.status_var.set(f"Đã đọc {len(payload)} thiết bị")
                     else:
                         self._log(str(payload))
+                        self.pool_var.set(self._pool_label())
                         self.status_var.set("Hoàn tất")
                         self.refresh_devices()
                 else:
@@ -253,10 +387,11 @@ class ProxyManagerApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.devices.clear()
-        for device, model, proxy, public_ip in rows:
+        for device, model, proxy, public_ip, gateway in rows:
             self.devices[device.serial] = device
             model_text = " ".join(filter(None, (model.get("manufacturer"), model.get("model")))) or device.details
-            self.tree.insert("", "end", values=(device.serial, device.state, model_text, proxy or "(none)", public_ip))
+            proxy_text = self._proxy_text(proxy, gateway)
+            self.tree.insert("", "end", values=(device.serial, device.state, model_text, proxy_text, public_ip))
 
     def _log(self, text: str) -> None:
         self.log.configure(state="normal")
@@ -264,13 +399,24 @@ class ProxyManagerApp:
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _proxy_text(self, proxy: str | None, gateway: dict[str, object] | None) -> str:
+        if not gateway:
+            return proxy or "(none)"
+        endpoint = str(gateway.get("endpoint") or "")
+        upstream = str(gateway.get("upstream") or "(chưa có upstream)")
+        running = "running" if gateway.get("running") else "stopped"
+        if proxy == endpoint:
+            return f"{endpoint} -> {upstream} [{running}]"
+        return f"{proxy or '(none)'} | gateway {endpoint} -> {upstream} [{running}]"
+
 
 def launch_gui(
     *,
     adb_path: str | None = None,
     backend: str = "adb",
     xiaowei_url: str = "ws://127.0.0.1:22222/",
-    state_path: str,
+    state_path: str = str(DEFAULT_STATE),
+    config_path: str = str(DEFAULT_CONFIG),
 ) -> int:
     root = tk.Tk()
     app = ProxyManagerApp(
@@ -279,7 +425,12 @@ def launch_gui(
         backend=backend,
         xiaowei_url=xiaowei_url,
         state_path=state_path,
+        config_path=config_path,
     )
     root.after(150, app.refresh_devices)
     root.mainloop()
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(launch_gui())

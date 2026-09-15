@@ -33,10 +33,14 @@ class Proxy:
             "host": self.host,
             "port": self.port,
             "username": self.username,
-            "password": self.password,
-            "raw": self.raw,
+            "password": "***",
+            "raw": self.redacted,
             "endpoint": self.endpoint,
         }
+
+    @classmethod
+    def from_raw(cls, value: str) -> "Proxy":
+        return parse_proxy(value)
 
 
 def parse_proxy(value: str) -> Proxy:

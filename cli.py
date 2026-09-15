@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .adb import AdbClient, AdbError, Device
 from .assignments import load_assignments
+from .config import DEFAULT_CONFIG, config_value, load_config
 from .proxy import Proxy, ProxyParseError, parse_proxy
 from .state import StateStore
 from .xiaowei import XiaoweiClient, XiaoweiError
@@ -18,7 +19,7 @@ DEFAULT_STATE = Path(__file__).resolve().parent / "data" / "state.json"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xiaowei-proxy",
-        description="Quản lý proxy cho box phone qua ADB; adapter Xiaowei sẽ cắm thêm sau.",
+        description="Quản lý Local Proxy Gateway cho box phone qua ADB/Xiaowei.",
     )
     parser.add_argument("--adb", help="Đường dẫn adb (mặc định lấy ADB_PATH hoặc adb).")
     parser.add_argument(
@@ -33,11 +34,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="WebSocket API local của Xiaowei.",
     )
     parser.add_argument("--state", default=str(DEFAULT_STATE), help="Đường dẫn state JSON.")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="File JSON cấu hình API và gateway.")
 
     commands = parser.add_subparsers(dest="command", required=True)
 
     commands.add_parser("devices", help="Liệt kê thiết bị ADB.")
-    commands.add_parser("gui", help="Mở giao diện Tkinter.")
+    gui = commands.add_parser("gui", help="Mở giao diện Tkinter.")
+    gui.add_argument("--config", default=argparse.SUPPRESS, help="File JSON cấu hình gateway cho UI.")
+    serve = commands.add_parser("serve", help="Mở REST API local cho service khác gọi.")
+    serve.add_argument("--config", default=argparse.SUPPRESS, help="File JSON cấu hình API và gateway.")
+    serve.add_argument("--host", help="Ghi đè api.host trong config.json.")
+    serve.add_argument("--port", type=int, help="Ghi đè api.port trong config.json.")
+    serve.add_argument(
+        "--gateway-bind-host",
+        help="Ghi đè gateway.bind_host trong config.json.",
+    )
+    serve.add_argument(
+        "--gateway-advertised-host",
+        help="Ghi đè gateway.advertised_host trong config.json.",
+    )
+    serve.add_argument("--gateway-start-port", type=int)
+    serve.add_argument("--gateway-end-port", type=int)
 
     status = commands.add_parser("status", help="Đọc http_proxy hiện tại trên thiết bị.")
     status.add_argument("--serial", action="append", help="Serial cần xem; có thể lặp lại.")
@@ -260,6 +277,33 @@ def main(argv: list[str] | None = None) -> int:
                 backend=args.backend,
                 xiaowei_url=args.xiaowei_url,
                 state_path=args.state,
+                config_path=args.config,
+            )
+        if args.command == "serve":
+            from .api import ProxyManagerService, serve_api
+            from .gateway import LocalProxyGateway
+
+            config = load_config(args.config)
+            api_host = config_value(args, config, "api", "host")
+            api_port = int(config_value(args, config, "api", "port"))
+            gateway_config = config["gateway"]
+            return serve_api(
+                ProxyManagerService(
+                    adb,
+                    state,
+                    backend=args.backend,
+                    gateway=LocalProxyGateway(
+                        state,
+                        bind_host=config_value(args, config, "gateway", "bind_host"),
+                        advertised_host=config_value(args, config, "gateway", "advertised_host") or None,
+                        start_port=int(config_value(args, config, "gateway", "start_port")),
+                        end_port=int(config_value(args, config, "gateway", "end_port")),
+                        connect_timeout=float(gateway_config.get("connect_timeout", 20)),
+                        idle_timeout=float(gateway_config.get("idle_timeout", 300)),
+                    ),
+                ),
+                host=api_host,
+                port=api_port,
             )
         if args.command == "status":
             return command_status(adb, state, args)

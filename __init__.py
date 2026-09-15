@@ -1,4 +1,3 @@
-"""ADB-first proxy manager for Xiaowei box phones."""
+"""Proxy manager with a host-side Local Proxy Gateway for Xiaowei box phones."""
 
-__version__ = "0.1.0"
-
+__version__ = "0.2.0"

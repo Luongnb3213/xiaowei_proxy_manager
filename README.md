@@ -1,7 +1,9 @@
-# Xiaowei Proxy Manager (ADB-first)
+# Xiaowei Proxy Manager (Local Proxy Gateway)
 
 Tool này nằm độc lập với `REG_PBANDAI`. Tool giao tiếp trực tiếp với phone qua
-ADB hoặc qua adapter WebSocket cục bộ của Xiaowei.
+ADB hoặc qua adapter WebSocket cục bộ của Xiaowei. Residential proxy được dùng
+ở host machine thông qua Local Proxy Gateway; Android chỉ nhận một endpoint
+`HOST_LAN_IP:LOCAL_PORT`.
 
 Docs Xiaowei đã dịch để agent khác đọc tiếp:
 
@@ -31,6 +33,159 @@ python -m xiaowei_proxy_manager --backend xiaowei devices
 python -m xiaowei_proxy_manager status --all
 ```
 
+### Cấu hình gateway
+
+Gateway listener mặc định bind `0.0.0.0` để Android Box trong LAN kết nối được.
+UI và lệnh `serve` đều tự đọc [config.json](config.json) trong package. Chỉnh
+một lần nếu cần đổi IP hoặc port:
+
+```json
+{
+  "api": {"host": "127.0.0.1", "port": 8765},
+  "gateway": {
+    "bind_host": "0.0.0.0",
+    "advertised_host": "",
+    "start_port": 10001,
+    "end_port": 11000,
+    "connect_timeout": 20,
+    "idle_timeout": 300
+  }
+}
+```
+
+`gateway.advertised_host` để trống thì chương trình tự chọn IPv4; nếu máy có
+nhiều card mạng/VPN, điền IP LAN mà Android kết nối được, ví dụ `192.168.1.50`.
+`gateway.bind_host` là địa chỉ listener bind, còn `api.host` chỉ dành cho REST
+API. Có thể dùng file khác với `gui --config /duong/dan/config.json` hoặc
+`serve --config /duong/dan/config.json`.
+
+Gateway hiện giả định upstream là **HTTP proxy**. HTTPS của website vẫn được
+hỗ trợ bằng HTTP `CONNECT` tunnel; gateway không MITM, không giải mã TLS và
+không cần cài CA trên Android. Chuỗi bạn đưa:
+
+```text
+residential.byteproxies.io:8888:pool-basic-cc-jp-city-kyoto-sid-79099880-ttl-30:YOUR_PASSWORD
+```
+
+được xử lý như HTTP proxy có Basic authentication. Format
+`HOST:PORT:USER:PASS` tự nó không cho biết proxy server có yêu cầu TLS khi kết
+nối tới chính proxy hay không; nếu nhà cung cấp yêu cầu `https://proxy-host`,
+cần bổ sung protocol riêng sau. Không gửi credential này cho Android.
+
+### REST API local
+
+Chạy API khi cần service khác gọi vào proxy manager:
+
+```bash
+python -m xiaowei_proxy_manager serve
+```
+
+API điều khiển mặc định bind tại `127.0.0.1` và không yêu cầu token.
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/api/v1/devices
+curl http://127.0.0.1:8765/api/v1/status
+curl http://127.0.0.1:8765/api/v1/gateway
+curl http://127.0.0.1:8765/api/v1/gateway/reconcile
+```
+
+Gán upstream lần đầu cho một thiết bị. API sẽ cấp local port, khởi động
+listener và cấu hình Android thành `gateway.advertised_host:local_port`:
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/v1/proxy/apply \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "serial": "box01-phone01",
+    "proxy": "residential.byteproxies.io:8888:pool-basic-cc-jp-city-kyoto-sid-79099880-ttl-30:YOUR_PASSWORD"
+  }'
+```
+
+Đổi residential proxy của cùng thiết bị, Android không bị cấu hình lại:
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/v1/devices/box01-phone01/upstream \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "proxy": "residential.byteproxies.io:8888:pool-basic-cc-jp-city-kyoto-sid-79099999-ttl-30:new_password"
+  }'
+```
+
+Local endpoint của `box01-phone01` vẫn giữ nguyên. Có thể dùng endpoint bulk:
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/v1/proxy/upstream \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "serials": ["box01-phone01", "box01-phone02"],
+    "proxy": "residential.byteproxies.io:8888:user:password"
+  }'
+```
+
+Các endpoint chính:
+
+| Method | Endpoint | Mục đích |
+|---|---|---|
+| `GET` | `/health` hoặc `/api/v1/health` | Kiểm tra API đang chạy |
+| `GET` | `/api/v1/devices` | Danh sách thiết bị |
+| `GET` | `/api/v1/status` | Proxy thực tế và proxy đã ghi trong state |
+| `GET` | `/api/v1/gateway` | Tất cả device → local port → upstream đã mask |
+| `GET` | `/api/v1/gateway/reconcile` | Xóa mapping của device không còn trong inventory |
+| `GET` | `/api/v1/proxy/pool` | Danh sách proxy pool đã mask |
+| `GET` | `/api/v1/devices/{serial}/gateway` | Gateway mapping một thiết bị |
+| `GET` | `/api/v1/devices/{serial}/proxy` | Status một thiết bị |
+| `POST` | `/api/v1/proxy/apply` | Gán gateway/upstream cho một hoặc nhiều thiết bị |
+| `POST` | `/api/v1/devices/{serial}/proxy` | Gán gateway cho một thiết bị |
+| `POST` | `/api/v1/devices/{serial}/gateway` | Alias của apply gateway |
+| `POST` | `/api/v1/proxy/upstream` | Đổi upstream cho nhiều thiết bị |
+| `POST` | `/api/v1/devices/{serial}/upstream` | Đổi upstream cho một thiết bị |
+| `POST` | `/api/v1/proxy/pool` | Import proxy pool từ JSON text/list/path |
+| `POST` | `/api/v1/proxy/rotate` | Xoay proxy từ pool cho nhiều thiết bị |
+| `POST` | `/api/v1/devices/{serial}/proxy/rotate` | Xoay proxy từ pool cho một thiết bị |
+| `POST` | `/api/v1/proxy/clear` | Clear bulk |
+| `DELETE` | `/api/v1/devices/{serial}/proxy` | Clear một thiết bị |
+| `DELETE` | `/api/v1/devices/{serial}/gateway` | Clear Android và dừng listener |
+| `POST` | `/api/v1/proxy/rollback` | Rollback bulk |
+| `POST` | `/api/v1/devices/{serial}/proxy/rollback` | Rollback một thiết bị |
+
+Bulk request nhận `serial`, `serials` hoặc `all: true`. Ví dụ clear toàn bộ:
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/v1/proxy/clear \
+  -H 'Content-Type: application/json' \
+  -d '{"all": true}'
+```
+
+Response chỉ trả upstream dạng mask, ví dụ
+`residential.byteproxies.io:8888:user:***`. Password không xuất hiện trong log
+hoặc API response. State local được đặt quyền `0600` trên Unix vì gateway cần
+restore upstream sau restart; trên Windows cần bảo vệ thư mục state bằng
+quyền user/service account tương ứng.
+
+Gateway không giới hạn subnet theo yêu cầu hiện tại. Vì vậy mọi máy có thể
+reach được các port gateway đều có thể dùng chúng như proxy; hãy dùng firewall
+OS/LAN nếu host nằm trên network không tin cậy.
+
+### Windows và macOS
+
+Trên Windows PowerShell:
+
+```powershell
+py -m xiaowei_proxy_manager --backend xiaowei serve
+```
+
+Trên macOS:
+
+```bash
+python3 -m xiaowei_proxy_manager serve
+```
+
+Logic gateway dùng Python socket/threading chuẩn nên không phụ thuộc
+PowerShell, `netsh` hoặc lệnh mạng riêng của macOS.
+
 ### Giao diện Tkinter
 
 Mở UI từ thư mục cha của package:
@@ -45,6 +200,19 @@ từ chính thiết bị sau khi proxy được áp dụng. Nút `Refresh device
 toàn bộ các giá trị này. Nếu Android không có `curl` hoặc `wget`, cột IP sẽ
 hiện `(không đọc được)`.
 
+Khi bấm `Apply proxy`, UI sẽ tạo hoặc dùng lại local gateway port cố định cho
+thiết bị đã chọn, set Android về `gateway.advertised_host:local_port`, rồi giữ
+credential của upstream proxy trên máy chạy UI. Bấm `Apply proxy` lần sau với
+upstream mới sẽ thay proxy phía sau mà endpoint trên Android vẫn giữ nguyên.
+UI cũng tự mở REST API local theo `api.host/api.port` trong `config.json`, nên
+service khác có thể gọi API trong lúc app đang mở mà không cần chạy thêm
+`serve`.
+
+Nút `Import list` nhận file `.txt`, `.csv` hoặc `.xlsx`. File có thể có một cột
+`proxy` chứa `host:port:username:password`, hoặc bốn cột `host`, `port`,
+`username`, `password`. Nút `Rotate proxy` lấy proxy tiếp theo chưa dùng trong
+pool nếu còn proxy trống; nếu tất cả đã dùng thì sẽ xoay vòng lại từ đầu.
+
 Proxy đầu vào có dạng bắt buộc:
 
 ```text
@@ -54,10 +222,7 @@ host:port:username:password
 Ví dụ chạy thử:
 
 ```bash
-python -m xiaowei_proxy_manager apply \
-  --serial emulator-5554 \
-  --proxy 10.0.0.5:8080:my_user:my_pass \
-  --dry-run
+python -m xiaowei_proxy_manager gui
 ```
 
 Khi Xiaowei đang mở trên máy Windows, dùng backend Xiaowei:
@@ -70,26 +235,6 @@ python -m xiaowei_proxy_manager --backend xiaowei apply \
   --proxy 10.0.0.5:8080:my_user:my_pass \
   --dry-run
 ```
-
-## Giới hạn ADB hiện tại
-
-`adb shell settings put global http_proxy` chỉ đặt được endpoint
-`host:port`. Android global proxy không cung cấp chỗ để truyền
-`username/password` bằng lệnh ADB này. Vì vậy tool mặc định **không ghi thay
-đổi** cho proxy 4 phần để tránh báo thành công giả.
-
-Sau khi bạn xác nhận muốn thử endpoint-only, có thể chạy:
-
-```bash
-python -m xiaowei_proxy_manager apply \
-  --all \
-  --proxy 10.0.0.5:8080:my_user:my_pass \
-  --allow-auth-unsupported
-```
-
-Lệnh trên sẽ đặt `10.0.0.5:8080`, đồng thời cảnh báo rằng
-`my_user/my_pass` chưa được Android sử dụng. Khi có docs Xiaowei, adapter native
-sẽ dùng đủ bốn trường.
 
 ## CSV mapping
 
@@ -105,11 +250,17 @@ python -m xiaowei_proxy_manager apply \
   --allow-auth-unsupported
 ```
 
+Lệnh CSV/CLI cũ vẫn giữ để tương thích, nhưng flow Local Proxy Gateway đầy đủ
+được điều khiển qua process `serve` và REST API. Android cần giữ listener
+gateway đang chạy; vì vậy không nên dùng CLI apply cũ để vận hành production
+thay cho API gateway.
+
 ## Rollback
 
 Mỗi lần apply/clear được ghi vào `data/state.json` (file được tạo quyền
-`0600` khi hệ điều hành hỗ trợ). Mật khẩu không được ghi vào log hoặc state;
-state chỉ giữ endpoint và nhãn đã che mật khẩu.
+`0600` khi hệ điều hành hỗ trợ). History Android chỉ giữ endpoint/nhãn đã mask;
+gateway mapping lưu upstream credential tại host để có thể restore sau restart.
+Credential không được trả qua API hoặc log.
 
 ```bash
 python -m xiaowei_proxy_manager rollback --serial box01-phone01

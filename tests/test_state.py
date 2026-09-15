@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from xiaowei_proxy_manager.proxy import parse_proxy
 from xiaowei_proxy_manager.state import StateStore
 
 
@@ -31,7 +32,21 @@ class StateStoreTests(unittest.TestCase):
             state.save()
             self.assertNotIn("secret-password", path.read_text(encoding="utf-8"))
 
+    def test_proxy_pool_picks_unused_then_wraps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = StateStore(Path(directory) / "state.json")
+            first = parse_proxy("proxy1.example:8888:user:pass1")
+            second = parse_proxy("proxy2.example:8888:user:pass2")
+            state.set_proxy_pool([first, second])
+
+            selected = state.next_proxy_from_pool(avoid_raw={first.raw}, mark_used_by="phone-1")
+            self.assertEqual(selected.raw, second.raw)
+            wrapped = state.next_proxy_from_pool(
+                avoid_raw={first.raw, second.raw},
+                mark_used_by="phone-2",
+            )
+            self.assertEqual(wrapped.raw, first.raw)
+
 
 if __name__ == "__main__":
     unittest.main()
-
