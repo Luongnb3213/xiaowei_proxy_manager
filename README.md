@@ -1,7 +1,7 @@
 # Xiaowei Proxy Manager (ADB-first)
 
-Tool này nằm độc lập với `REG_PBANDAI`. Bản đầu giao tiếp trực tiếp với các
-phone qua ADB; adapter cho Xiaowei sẽ được thêm sau khi có tài liệu/API.
+Tool này nằm độc lập với `REG_PBANDAI`. Tool giao tiếp trực tiếp với phone qua
+ADB hoặc qua adapter WebSocket cục bộ của Xiaowei.
 
 Docs Xiaowei đã dịch để agent khác đọc tiếp:
 
@@ -100,4 +100,12 @@ state chỉ giữ endpoint và nhãn đã che mật khẩu.
 ```bash
 python -m xiaowei_proxy_manager rollback --serial box01-phone01
 python -m xiaowei_proxy_manager clear --all
+```
+
+## Kiểm thử
+
+Từ thư mục cha của package (ví dụ `C:\Users\ADMIN\github`), chạy:
+
+```bash
+python -m unittest discover -s xiaowei_proxy_manager/tests -v
 ```
