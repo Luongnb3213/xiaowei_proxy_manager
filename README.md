@@ -237,6 +237,10 @@ Khi bấm `Apply proxy`, UI sẽ tạo hoặc dùng lại local gateway port c�
 thiết bị đã chọn, set Android về `gateway.advertised_host:local_port`, rồi giữ
 credential của upstream proxy trên máy chạy UI. Bấm `Apply proxy` lần sau với
 upstream mới sẽ thay proxy phía sau mà endpoint trên Android vẫn giữ nguyên.
+
+Khi chạy backend `xiaowei`, UI dùng `127.0.0.1:local_port` trên Android và tự
+tạo `adb reverse` cho từng thiết bị. Cách này không phụ thuộc việc Wi-Fi/AP có
+chặn kết nối từ điện thoại về máy tính hay không.
 UI cũng tự mở REST API local theo `api.host/api.port` trong `config.json`, nên
 service khác có thể gọi API trong lúc app đang mở mà không cần chạy thêm
 `serve`.

@@ -185,6 +185,25 @@ class LocalProxyGateway:
         with self._lock:
             return list(self._mappings.values())
 
+    def set_advertised_host(self, host: str) -> None:
+        """Change the endpoint host shown to Android while keeping listeners."""
+        host = str(host or "").strip()
+        if not host:
+            raise ValueError("Gateway advertised host không được trống.")
+        with self._lock:
+            self.advertised_host = host
+            for mapping in self._mappings.values():
+                mapping.advertised_host = host
+                self.state.set_gateway_mapping(
+                    mapping.device_id,
+                    local_port=mapping.local_port,
+                    bind_host=mapping.bind_host,
+                    advertised_host=host,
+                    upstream=mapping.upstream,
+                    record_history=False,
+                )
+            self.state.save()
+
     def remove_mapping(self, device_id: str, *, delete_state: bool = True) -> None:
         device_id = _require_device_id(device_id)
         with self._lock:

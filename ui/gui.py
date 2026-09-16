@@ -73,7 +73,12 @@ class ProxyManagerApp:
         self.state = StateStore(state_path)
         self.config_path = config_path
         self.config = load_config(config_path)
-        self.gateway = LocalProxyGateway(self.state, **gateway_kwargs(self.config))
+        gateway_options = gateway_kwargs(self.config)
+        if backend == "xiaowei" and not gateway_options.get("advertised_host"):
+            gateway_options["advertised_host"] = "127.0.0.1"
+        self.gateway = LocalProxyGateway(self.state, **gateway_options)
+        if backend == "xiaowei":
+            self.gateway.set_advertised_host("127.0.0.1")
 
         self.backend_var = tk.StringVar(value=backend)
         self.adb_var = tk.StringVar(value=adb_path or _find_adb_path())
@@ -113,6 +118,7 @@ class ProxyManagerApp:
             state="readonly", width=12,
         )
         backend.grid(row=0, column=1, padx=(6, 14), sticky="w")
+        backend.bind("<<ComboboxSelected>>", self._backend_changed)
         ttk.Label(top, text="ADB path").grid(row=0, column=2, sticky="w")
         ttk.Entry(top, textvariable=self.adb_var, width=35).grid(row=0, column=3, padx=6, sticky="ew")
         ttk.Label(top, text="Xiaowei URL").grid(row=0, column=4, sticky="w")
@@ -178,9 +184,18 @@ class ProxyManagerApp:
         return button
 
     def _client(self):
+        self._sync_backend_gateway()
         if self.backend_var.get() == "xiaowei":
             return XiaoweiClient(self.xiaowei_var.get().strip())
         return AdbClient(self.adb_var.get().strip() or "adb")
+
+    def _backend_changed(self, _event=None) -> None:
+        self._sync_backend_gateway()
+        self.gateway_var.set(self._gateway_label())
+
+    def _sync_backend_gateway(self) -> None:
+        if self.backend_var.get() == "xiaowei" and self.gateway.advertised_host != "127.0.0.1":
+            self.gateway.set_advertised_host("127.0.0.1")
 
     def _service(self) -> ProxyManagerService:
         return ProxyManagerService(
@@ -654,7 +669,7 @@ def _find_adb_path() -> str:
 def launch_gui(
     *,
     adb_path: str | None = None,
-    backend: str = "adb",
+    backend: str = "xiaowei",
     xiaowei_url: str = "ws://127.0.0.1:22222/",
     state_path: str = str(DEFAULT_STATE),
     config_path: str = str(DEFAULT_CONFIG),

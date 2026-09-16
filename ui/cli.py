@@ -320,20 +320,26 @@ def main(argv: list[str] | None = None) -> int:
             api_host = config_value(args, config, "api", "host")
             api_port = int(config_value(args, config, "api", "port"))
             gateway_config = config["gateway"]
+            advertised_host = config_value(args, config, "gateway", "advertised_host") or None
+            if backend == "xiaowei" and advertised_host is None:
+                advertised_host = "127.0.0.1"
+            gateway = LocalProxyGateway(
+                state,
+                bind_host=config_value(args, config, "gateway", "bind_host"),
+                advertised_host=advertised_host,
+                start_port=int(config_value(args, config, "gateway", "start_port")),
+                end_port=int(config_value(args, config, "gateway", "end_port")),
+                connect_timeout=float(gateway_config.get("connect_timeout", 20)),
+                idle_timeout=float(gateway_config.get("idle_timeout", 300)),
+            )
+            if backend == "xiaowei":
+                gateway.set_advertised_host("127.0.0.1")
             return serve_api(
                 ProxyManagerService(
                     adb,
                     state,
                     backend=backend,
-                    gateway=LocalProxyGateway(
-                        state,
-                        bind_host=config_value(args, config, "gateway", "bind_host"),
-                        advertised_host=config_value(args, config, "gateway", "advertised_host") or None,
-                        start_port=int(config_value(args, config, "gateway", "start_port")),
-                        end_port=int(config_value(args, config, "gateway", "end_port")),
-                        connect_timeout=float(gateway_config.get("connect_timeout", 20)),
-                        idle_timeout=float(gateway_config.get("idle_timeout", 300)),
-                    ),
+                    gateway=gateway,
                 ),
                 host=api_host,
                 port=api_port,

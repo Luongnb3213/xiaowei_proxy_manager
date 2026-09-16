@@ -101,6 +101,12 @@ class AdbClient:
         self.shell(serial, "settings", "put", "global", "http_proxy", ":0")
         return self.get_global_proxy(serial)
 
+    def reverse_port(self, serial: str, port: int) -> None:
+        """Expose a host gateway port as localhost on the Android device."""
+        if port < 1 or port > 65535:
+            raise ValueError("Port reverse không hợp lệ.")
+        self._run(["-s", serial, "reverse", f"tcp:{port}", f"tcp:{port}"])
+
     def get_model(self, serial: str) -> dict[str, str]:
         props = {
             "manufacturer": "ro.product.manufacturer",

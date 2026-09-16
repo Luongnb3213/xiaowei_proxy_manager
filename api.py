@@ -406,6 +406,16 @@ class ProxyManagerService:
         *,
         before: str | None = None,
     ) -> str:
+        # Xiaowei/USB devices may be isolated from the host LAN.  ADB reverse
+        # makes 127.0.0.1:<port> on the phone reach the local gateway reliably.
+        if self.backend == "xiaowei" and endpoint.startswith("127.0.0.1:"):
+            try:
+                port = int(endpoint.rsplit(":", 1)[1])
+                reverse = getattr(self.client, "reverse_port", None)
+                if reverse is not None:
+                    reverse(serial, port)
+            except (TypeError, ValueError) as exc:
+                raise GatewayError(f"{serial}: không tạo được ADB reverse cho {endpoint}") from exc
         actual_before = before if before is not None else self.client.get_global_proxy(serial)
         if actual_before == endpoint:
             return endpoint

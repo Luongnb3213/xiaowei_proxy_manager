@@ -293,6 +293,21 @@ class XiaoweiClient:
         self.shell_no_output(serial, "settings put global http_proxy :0")
         return self.get_global_proxy(serial)
 
+    def reverse_port(self, serial: str, port: int) -> None:
+        """Create an ADB reverse tunnel from phone localhost to this host."""
+        if port < 1 or port > 65535:
+            raise ValueError("Port reverse không hợp lệ.")
+        response = self.request(
+            {
+                "action": "adb",
+                "devices": serial,
+                "data": {"command": f"adb -s {serial} reverse tcp:{port} tcp:{port}"},
+            }
+        )
+        # Xiaowei normally returns the command output in data; a successful
+        # API response is sufficient because `adb reverse` is otherwise silent.
+        _ = response
+
     def get_model(self, serial: str) -> dict[str, str]:
         return {
             "manufacturer": self.shell(serial, "getprop", "ro.product.manufacturer", check=False),
